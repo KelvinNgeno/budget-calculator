@@ -1,55 +1,102 @@
 package main
 
-import "fmt"
+import (
+	_ "embed"
+	"fmt"
+	"html/template"
+	"log"
+	"math"
+	"net/http"
+	"os/exec"
+	"runtime"
+	"strconv"
+	"time"
+)
 
-func main() {
-	//==========================================
-	// 1. Ask for Income
-	//==========================================
-	var income float64
-	fmt.Print("Enter your monthly income(KES): ")
-	fmt.Scan(&income)
+//go:embed index.html
+var indexHTML string
 
-	//==========================================
-	// 2. Ask for Expenses
-	//==========================================
-	var rent, food, transport, other float64
-	fmt.Print("Enter rent/house expense: ")
-	fmt.Scan(&rent)
+var tmpl = template.Must(template.New("index").Parse(indexHTML))
 
-	fmt.Print("Enter food expense: ")
-	fmt.Scan(&food)
+type PageData struct {
+	Submitted     bool
+	Income        float64
+	Rent          float64
+	Food          float64
+	Transport     float64
+	Other         float64
+	TotalExpenses float64
+	Remaining     float64
+	Advice        string
+	StatusClass   string
+}
 
-	fmt.Print("Enter transport expense: ")
-	fmt.Scan(&transport)
+func formFloat(r *http.Request, name string) float64 {
+	v, _ := strconv.ParseFloat(r.FormValue(name), 64)
+	return v
+}
 
-	fmt.Print("Enter other expenses: ")
-	fmt.Scan(&other)
+func budgetHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
 
-	//=========================================
-	// 3. Calculate totals
-	//=========================================
-	totalExpenses := rent + food + transport + other
-	remaining := income - totalExpenses
+	data := PageData{}
 
-	//=========================================
-	// 4. Show the results
-	//=========================================
-	fmt.Println("\n==========BUDGET SUMMARY==========")
-	fmt.Printf("Monthly Income: %.2f KES\n", income)
-	fmt.Printf("Total Expenses: %.2f KES\n", totalExpenses)
-	fmt.Printf("Money Remaining: %.2f KES\n", remaining)
-	fmt.Println("===================================")
+	if r.Method == http.MethodPost {
+		data.Submitted = true
+		data.Income = formFloat(r, "income")
+		data.Rent = formFloat(r, "rent")
+		data.Food = formFloat(r, "food")
+		data.Transport = formFloat(r, "transport")
+		data.Other = formFloat(r, "other")
 
-	//==========================================
-	// 5. Give advice based on the result
-	//==========================================
-	if remaining > 0 {
-		fmt.Printf("\nGood job! You can save %.2f KES this month.\n", remaining)
-	} else if remaining == 0 {
-		fmt.Println("\nYou broke even. No savings this month.")
-	} else {
-		fmt.Printf("\nWarning! You are over budget by %.2f KES.\n", -remaining)
+		data.TotalExpenses = math.Round((data.Rent+data.Food+data.Transport+data.Other)*100) / 100
+		data.Remaining = math.Round((data.Income-data.TotalExpenses)*100) / 100
+
+		switch {
+		case data.Remaining > 0:
+			data.StatusClass = "positive"
+			data.Advice = fmt.Sprintf("Good job! You can save %.2f KES this month.", data.Remaining)
+		case data.Remaining == 0:
+			data.StatusClass = "neutral"
+			data.Advice = "You broke even. No savings this month."
+		default:
+			data.StatusClass = "negative"
+			data.Advice = fmt.Sprintf("Warning! You are over budget by %.2f KES.", -data.Remaining)
+		}
+	}
+
+	if err := tmpl.Execute(w, data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
 
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	_ = cmd.Start()
+}
+
+func main() {
+	const url = "http://localhost:8080"
+	http.HandleFunc("/", budgetHandler)
+
+	fmt.Println("Budget Calculator running at " + url)
+	fmt.Println("Keep this window open while you use it. Press Ctrl+C to stop.")
+
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		openBrowser(url)
+	}()
+
+	log.Fatal(http.ListenAndServe("127.0.0.1:8080", nil))
+}
